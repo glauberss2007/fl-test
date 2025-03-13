@@ -1,0 +1,63 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_REGISTRY = credentials('docker-registry')
+        DOCKER_IMAGE = "${DOCKER_REGISTRY}/python-app:${BUILD_NUMBER}"
+        GITHUB_REPO = credentials('github-repo-url')
+        KUBECONFIG = credentials('k3s-hml')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: "${GITHUB_REPO}"
+            }
+        }
+
+        stage('Build e Teste') {
+            steps {
+                sh '''
+                    python -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt
+                    python -m pytest tests/
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${DOCKER_IMAGE}")
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry("http://${DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                        docker.image("${DOCKER_IMAGE}").push()
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh """
+                    sed -i 's|seu-docker-registry:5000/python-app:latest|${DOCKER_IMAGE}|' deployment.yaml
+                    kubectl --kubeconfig=${KUBECONFIG} apply -f deployment.yaml
+                    kubectl --kubeconfig=${KUBECONFIG} rollout status deployment/python-app
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
